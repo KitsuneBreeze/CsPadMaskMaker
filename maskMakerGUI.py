@@ -6,7 +6,10 @@ from __future__ import unicode_literals
 
 import argparse
 import h5py
-from PyQt4 import QtGui
+try:
+    from PyQt5 import QtGui
+except ImportError:
+    from PyQt4 import QtGui
 import pyqtgraph as pg
 import numpy as np
 import scipy
