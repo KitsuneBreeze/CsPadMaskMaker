@@ -8,7 +8,7 @@ import argparse
 import h5py
 try:
     from PyQt5 import QtGui
-except ImportError:
+except :
     from PyQt4 import QtGui
 import pyqtgraph as pg
 import numpy as np
@@ -25,6 +25,58 @@ except ImportError :
 cspad_psana_shape = (4, 8, 185, 388)
 cspad_geom_shape  = (1480, 1552)
 pilatus_geom_shape = (2527, 2463)
+
+def parse_parameters(config):
+    """
+    Parse values from the configuration file and sets internal parameter accordingly
+    The parameter dictionary is made available to both the workers and the master nodes
+    The parser tries to interpret an entry in the configuration file as follows:
+    - If the entry starts and ends with a single quote, it is interpreted as a string
+    - If the entry is the word None, without quotes, then the entry is interpreted as NoneType
+    - If the entry is the word False, without quotes, then the entry is interpreted as a boolean False
+    - If the entry is the word True, without quotes, then the entry is interpreted as a boolean True
+    - If non of the previous options match the content of the entry, the parser tries to interpret the entry in order as:
+        - An integer number
+        - A float number
+        - A string
+      The first choice that succeeds determines the entry type
+    """
+
+    monitor_params = {}
+
+    for sect in config.sections():
+        monitor_params[sect]={}
+        for op in config.options(sect):
+            monitor_params[sect][op] = config.get(sect, op)
+            if monitor_params[sect][op].startswith("'") and monitor_params[sect][op].endswith("'"):
+                monitor_params[sect][op] = monitor_params[sect][op][1:-1]
+                continue
+            if monitor_params[sect][op] == 'None':
+                monitor_params[sect][op] = None
+                continue
+            if monitor_params[sect][op] == 'False':
+                monitor_params[sect][op] = False
+                continue
+            if monitor_params[sect][op] == 'True':
+                monitor_params[sect][op] = True
+                continue
+            try:
+                monitor_params[sect][op] = int(monitor_params[sect][op])
+                continue
+            except :
+                try :
+                    monitor_params[sect][op] = float(monitor_params[sect][op])
+                    continue
+                except :
+                    # attempt to pass as an array of ints e.g. '1, 2, 3'
+                    try :
+                        l = monitor_params[sect][op].split(',')
+                        monitor_params[sect][op] = np.array(l, dtype=np.int)
+                        continue
+                    except :
+                        pass
+
+    return monitor_params
 
 
 
@@ -69,6 +121,7 @@ def cheetah_mask(data, mask, x, y, adc_thresh=20, min_snr=6, counter = 5):
         print('found it! loading params...')
         config = configparser.ConfigParser()
         config.read(ini)	
+        config = parse_parameters(config)
         adc_thresh = float(config['cheetah']['adc_thresh'])
         min_snr    = float(config['cheetah']['min_snr'])
         counter    = int(config['cheetah']['counter'])
@@ -146,16 +199,17 @@ def make_pilatus_sub_edges(
         print('found it! loading params...')
         config = configparser.ConfigParser()
         config.read(ini)	
-        panWid = int(config['pilatus']['panWid'])
-        panHei = int(config['pilatus']['panHei'])
-        vGap = int(config['pilatus']['vGap'])
-        hGap = int(config['pilatus']['hGap'])
-        spanWid = int(config['pilatus']['spanWid'])
-        spanHei = int(config['pilatus']['spanHei'])
-        svGap = int(config['pilatus']['svGap'])
-        shGap = int(config['pilatus']['shGap'])
-        svGapEdge = int(config['pilatus']['svGapEdge'])
-        shGapEdge = int(config['pilatus']['shGapEdge'])
+        config = parse_parameters(config)
+        panWid = int(config['pilatus']['panwid'])
+        panHei = int(config['pilatus']['panhei'])
+        vGap = int(config['pilatus']['vgap'])
+        hGap = int(config['pilatus']['hgap'])
+        spanWid = int(config['pilatus']['spanwid'])
+        spanHei = int(config['pilatus']['spanhei'])
+        svGap = int(config['pilatus']['svgap'])
+        shGap = int(config['pilatus']['shgap'])
+        svGapEdge = int(config['pilatus']['svgapedge'])
+        shGapEdge = int(config['pilatus']['shgapedge'])
 
     mask = np.ones(pilatus_geom_shape, dtype=np.bool)
     maxSS, maxFS = mask.shape
