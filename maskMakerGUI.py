@@ -14,6 +14,7 @@ import pyqtgraph as pg
 import numpy as np
 import scipy
 import geometry_funcs as gf
+import signal
 
 cspad_psana_shape = (4, 8, 185, 388)
 cspad_geom_shape  = (1480, 1552)
@@ -75,6 +76,16 @@ def edges(shape, pad = 0):
         mask_edges = scipy.signal.convolve(1 - mask_edges.astype(np.float), np.ones((pad, pad), dtype=np.float), mode = 'same') < 1
     return mask_edges
 
+def dilate(mask):
+    from scipy.ndimage.morphology import binary_dilation
+    mask = ~binary_dilation(~mask)
+    return mask
+
+def errode(mask):
+    from scipy.ndimage.morphology import binary_dilation
+    mask = binary_dilation(mask)
+    return mask
+
 class Application:
     def __init__(self, cspad, geom_fnam = None, mask = None):
         # check if the cspad is psana shaped
@@ -107,7 +118,7 @@ class Application:
             # 
             # get the xy coords as a slab
             # self.y_map, self.x_map = gf.make_yx_from_1480_1552(geom_fnam)
-            self.x_map, self.y_map = gf.pixel_maps_from_geometry_file(geom_fnam)
+            self.x_map, self.y_map, self.det_dict = gf.pixel_maps_from_geometry_file(geom_fnam, return_dict = True)
         else :
             i, j = np.meshgrid(range(self.cspad.shape[0]), range(self.cspad.shape[1]), indexing='ij')
             self.y_map, self.x_map = (i-self.cspad.shape[0]//2, j-self.cspad.shape[1]//2)
@@ -268,7 +279,46 @@ class Application:
         self.generate_mask()
         self.updateDisplayRGB()
 
+    def dilate_mask(self):
+        """
+        do this on a per-panel basis
+        """
+        
+        # loop over panels
+        if self.geom_fnam is not None :
+            for p in self.det_dict.keys():
+                i = [self.det_dict[p]['min_ss'], self.det_dict[p]['max_ss'] + 1, self.det_dict[p]['min_fs'], self.det_dict[p]['max_fs'] + 1]
+                self.mask_clicked[i[0]:i[1], i[2]:i[3]] = dilate(self.mask_clicked[i[0]:i[1], i[2]:i[3]])
+        else :
+                self.mask_clicked = dilate(self.mask_clicked)
+        
+        self.generate_mask()
+        self.updateDisplayRGB()
+
+    def errode_mask(self, mask = None):
+        """
+        do this on a per-panel basis
+        by looping over the last 2 dimensions
+        assuming that they are the panels
+        """
+        if mask is None :
+            mask = self.mask_clicked
+        
+        # get the '(2,3)' in (2,3,4,5) 
+        # where (4,5) is the panel shape
+        s_shape = mask.shape[:-2] 
+        
+        # loop over this
+        for i in range(np.prod(s_shape)):
+            j = np.unravel_index(i, s_shape)
+            mask[j] = ~dilate(~mask[j])
+        
+        self.generate_mask()
+        self.updateDisplayRGB()
+
     def initUI(self):
+        signal.signal(signal.SIGINT, signal.SIG_DFL) # allow Control-C
+        
         # Always start by initializing Qt (only once per application)
         app = QtGui.QApplication([])
 
@@ -299,6 +349,10 @@ class Application:
         # histogram mask button
         hist_button = QtGui.QPushButton('mask outside histogram')
         hist_button.clicked.connect(self.mask_hist)
+
+        # dilate button
+        dilate_button = QtGui.QPushButton('dilate mask')
+        dilate_button.clicked.connect(self.dilate_mask)
 
         # toggle / mask / unmask checkboxes
         self.toggle_checkbox   = QtGui.QCheckBox('toggle')
@@ -333,36 +387,43 @@ class Application:
         # mouse click mask 
         self.plot.scene.sigMouseClicked.connect( lambda click: self.mouseClicked(self.plot, click) )
 
+        ## Add widgets to the layout in their proper positions
+        # stack up sidepanel widgets
+        vbox = QtGui.QVBoxLayout()
+        vbox.addWidget(save_button)
+        vbox.addWidget(ROI_button)
+        vbox.addWidget(ROI_circle_button)
+        vbox.addWidget(hist_button)
+        vbox.addWidget(dilate_button)
+        vbox.addWidget(self.toggle_checkbox)
+        vbox.addWidget(self.mask_checkbox)
+        vbox.addWidget(self.unmask_checkbox)
+        vbox.addStretch(1)
+        vbox.addWidget(unbonded_checkbox)
+        vbox.addWidget(edges_checkbox)
+        
         # Create a grid layout to manage the widgets size and position
         layout = QtGui.QGridLayout()
         w.setLayout(layout)
-
-        ## Add widgets to the layout in their proper positions
-        layout.addWidget(save_button, 0, 0)             # upper-left
-        layout.addWidget(ROI_button, 1, 0)              # upper-left
-        layout.addWidget(ROI_circle_button, 2, 0)       # upper-left
-        layout.addWidget(hist_button, 3, 0)             # upper-left
-        layout.addWidget(self.toggle_checkbox, 4, 0)    # upper-left
-        layout.addWidget(self.mask_checkbox, 5, 0)      # upper-left
-        layout.addWidget(self.unmask_checkbox, 6, 0)    # upper-left
-        layout.addWidget(ij_label, 7, 0)                # upper-left
-        layout.addWidget(unbonded_checkbox, 8, 0)       # middle-left
-        layout.addWidget(edges_checkbox, 9, 0)          # bottom-left
-        layout.addWidget(self.plot, 0, 1, 9, 1)         # plot goes on right side, spanning 3 rows
-        layout.setColumnStretch(1, 1)
-        layout.setColumnMinimumWidth(0, 250)
         
+        layout.addLayout(vbox, 0, 0)
+        layout.addWidget(self.plot, 0, 1)
+        layout.addWidget(ij_label, 1, 0, 1, 2)
+        layout.setColumnStretch(1, 1)
+        #layout.setColumnMinimumWidth(0, 250)
+
         # display the image
         self.generate_mask()
         self.updateDisplayRGB(auto = True)
-
+        
         # centre the circle initially 
         if self.geom_fnam is not None :
             self.roi_circle.setPos([self.cspad_shape[0]//2 - 1 - 50, self.cspad_shape[1]//2 - 1 - 50])
-
+        
         ## Display the widget as a new window
+        w.resize(800, 480)
         w.show()
-
+        
         ## Start the Qt event loop
         app.exec_()
     

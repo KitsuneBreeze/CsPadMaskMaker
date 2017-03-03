@@ -9,7 +9,7 @@ cspad_psana_shape = (4, 8, 185, 388)
 cspad_geom_shape  = (1480, 1552)
 
 
-def pixel_maps_from_geometry_file(fnam):
+def pixel_maps_from_geometry_file(fnam, return_dict = False):
     """
     Return pixel and radius maps from the geometry file
     
@@ -75,7 +75,7 @@ def pixel_maps_from_geometry_file(fnam):
         # get the pixel coords for this asic
         i, j = np.meshgrid( np.arange(parsed_detector_dict[p]['max_ss'] - parsed_detector_dict[p]['min_ss'] + 1),
                                np.arange(parsed_detector_dict[p]['max_fs'] - parsed_detector_dict[p]['min_fs'] + 1), indexing='ij')
-
+        
         #
         # make the y-x ( ss, fs ) vectors, using complex notation
         dx  = parsed_detector_dict[p]['fs'][1] + 1J * parsed_detector_dict[p]['fs'][0]
@@ -87,7 +87,10 @@ def pixel_maps_from_geometry_file(fnam):
         y[parsed_detector_dict[p]['min_ss']: parsed_detector_dict[p]['max_ss'] + 1, parsed_detector_dict[p]['min_fs']: parsed_detector_dict[p]['max_fs'] + 1] = r.real
         x[parsed_detector_dict[p]['min_ss']: parsed_detector_dict[p]['max_ss'] + 1, parsed_detector_dict[p]['min_fs']: parsed_detector_dict[p]['max_fs'] + 1] = r.imag
             
-    return x, y
+    if return_dict :
+        return x, y, parsed_detector_dict
+    else :
+        return x, y
 
 def read_geometry_file(fnam, return_preamble = False):
     # get everything from the file
