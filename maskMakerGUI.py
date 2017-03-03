@@ -252,15 +252,17 @@ def edges(shape, pad = 0, det_dict=None):
             mask_edges[i[0]: min(i[1],i[0]+pad+1), i[2]:i[3]] = False
             mask_edges[max(i[0],i[1]-pad-1): i[1], i[2]:i[3]] = False
      
-    elif shape == pilatus_geom_shape :
-        # no padding yet
-        mask_edges = make_pilatus_edges()
-    
     else :
         mask_edges[:, : pad+1] = False
         mask_edges[:, -pad-1:] = False
         mask_edges[: pad+1, :] = False
         mask_edges[-pad-1:, :] = False
+
+    if shape == pilatus_geom_shape :
+        # no padding yet
+        print('making pilatus edges')
+        mask_edges *= make_pilatus_edges()
+    
     return mask_edges
 
 def dilate(mask):
