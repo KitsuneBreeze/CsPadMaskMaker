@@ -81,11 +81,6 @@ def dilate(mask):
     mask = ~binary_dilation(~mask)
     return mask
 
-def errode(mask):
-    from scipy.ndimage.morphology import binary_dilation
-    mask = binary_dilation(mask)
-    return mask
-
 class Application:
     def __init__(self, cspad, geom_fnam = None, mask = None):
         # check if the cspad is psana shaped
@@ -296,22 +291,14 @@ class Application:
         self.updateDisplayRGB()
 
     def errode_mask(self, mask = None):
-        """
-        do this on a per-panel basis
-        by looping over the last 2 dimensions
-        assuming that they are the panels
-        """
-        if mask is None :
-            mask = self.mask_clicked
+        # loop over panels
+        if self.geom_fnam is not None :
+            for p in self.det_dict.keys():
+                i = [self.det_dict[p]['min_ss'], self.det_dict[p]['max_ss'] + 1, self.det_dict[p]['min_fs'], self.det_dict[p]['max_fs'] + 1]
+                self.mask_clicked[i[0]:i[1], i[2]:i[3]] = ~dilate(~self.mask_clicked[i[0]:i[1], i[2]:i[3]])
+        else :
+                self.mask_clicked = ~dilate(~self.mask_clicked)
         
-        # get the '(2,3)' in (2,3,4,5) 
-        # where (4,5) is the panel shape
-        s_shape = mask.shape[:-2] 
-        
-        # loop over this
-        for i in range(np.prod(s_shape)):
-            j = np.unravel_index(i, s_shape)
-            mask[j] = ~dilate(~mask[j])
         
         self.generate_mask()
         self.updateDisplayRGB()
@@ -354,6 +341,10 @@ class Application:
         dilate_button = QtGui.QPushButton('dilate mask')
         dilate_button.clicked.connect(self.dilate_mask)
 
+        # errode button
+        errode_button = QtGui.QPushButton('errode mask')
+        errode_button.clicked.connect(self.errode_mask)
+        
         # toggle / mask / unmask checkboxes
         self.toggle_checkbox   = QtGui.QCheckBox('toggle')
         self.mask_checkbox     = QtGui.QCheckBox('mask')
@@ -395,6 +386,7 @@ class Application:
         vbox.addWidget(ROI_circle_button)
         vbox.addWidget(hist_button)
         vbox.addWidget(dilate_button)
+        vbox.addWidget(errode_button)
         vbox.addWidget(self.toggle_checkbox)
         vbox.addWidget(self.mask_checkbox)
         vbox.addWidget(self.unmask_checkbox)
