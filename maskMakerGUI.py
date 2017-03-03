@@ -15,9 +15,187 @@ import numpy as np
 import scipy
 import geometry_funcs as gf
 import signal
+import os
+
+try :
+    import ConfigParser as configparser 
+except ImportError :
+	import configparser 
 
 cspad_psana_shape = (4, 8, 185, 388)
 cspad_geom_shape  = (1480, 1552)
+pilatus_geom_shape = (2527, 2463)
+
+
+
+def radial_symetry(background, rs = None, is_fft_shifted = True):
+    if rs is None :
+        i = np.fft.fftfreq(background.shape[0]) * background.shape[0]
+        j = np.fft.fftfreq(background.shape[1]) * background.shape[1]
+        k = np.fft.fftfreq(background.shape[2]) * background.shape[2]
+        i, j, k = np.meshgrid(i, j, k, indexing='ij')
+        rs      = np.sqrt(i**2 + j**2 + k**2).astype(np.int16)
+        
+        if is_fft_shifted is False :
+            rs = np.fft.fftshift(rs)
+        rs = rs.ravel()
+    
+    ########### Find the radial average
+    # get the r histogram
+    r_hist = np.bincount(rs)
+    # get the radial total 
+    r_av = np.bincount(rs, background.ravel())
+    # prevent divide by zero
+    nonzero = np.where(r_hist != 0)
+    zero    = np.where(r_hist == 0)
+    # get the average
+    r_av[nonzero] = r_av[nonzero] / r_hist[nonzero].astype(r_av.dtype)
+    r_av[zero]    = 0
+
+    ########### Make a large background filled with the radial average
+    background = r_av[rs].reshape(background.shape)
+    return background, rs, r_av
+
+def cheetah_mask(data, mask, x, y, adc_thresh=20, min_snr=6, counter = 5):
+    # load options from maskMaker.ini so the user can update parameters on the fly
+    ##############################################################################
+    # check the ini file for cheetah parameters
+    # fall back on defaults if not found
+    print('looking for maskMaker.ini')
+    ini = os.path.split(os.path.abspath(__file__))[0]
+    ini = os.path.join(ini, 'maskMaker.ini')
+
+    if os.path.exists(ini):
+        print('found it! loading params...')
+        config = configparser.ConfigParser()
+        config.read(ini)	
+        adc_thresh = float(config['cheetah']['adc_thresh'])
+        min_snr    = float(config['cheetah']['min_snr'])
+        counter    = int(config['cheetah']['counter'])
+    
+    temp, rs, r_av = radial_symetry(data.astype(np.float), rs = np.rint(np.sqrt(x**2+y**2)).astype(np.int).ravel())
+
+    roffset     = np.zeros_like(r_av, dtype=np.float)
+    rsigma      = np.zeros_like(r_av, dtype=np.float)
+    rcount      = np.zeros_like(r_av, dtype=np.float)
+    rthreshold  = np.zeros_like(r_av, dtype=np.float)
+    rthreshold[:] = 1e9
+    
+    mask_temp = mask.copy()
+    
+    for i in range(counter):
+        # calculate radial average
+        # calculate radial sigma
+        ##########################
+        rcount = np.bincount(rs, mask_temp.ravel())
+        roffset = np.bincount(rs, (mask_temp*data).ravel())
+        rsigma  = np.bincount(rs, (mask_temp*data**2).ravel())
+        
+        nonzero = rcount>0
+        roffset[nonzero]  = roffset[nonzero] / rcount[nonzero].astype(np.float)
+        roffset[~nonzero] = 1e9
+
+        rsigma[nonzero]  = np.sqrt(rsigma[nonzero] / rcount[nonzero].astype(np.float) - roffset[nonzero]**2)
+        rsigma[~nonzero] = 0.
+
+        # calculate threshold
+        #####################
+        rthreshold = roffset + min_snr * rsigma
+        rthreshold[rthreshold < adc_thresh] = adc_thresh
+
+        mask_temp *= (data < rthreshold[rs].reshape(data.shape))
+    return mask_temp
+
+
+def make_pilatus_edges():
+    panels      = (12, 5)
+    panel_step  = (212, 494)
+    panel_shape = (195, 487)
+
+    gaps = np.ones(pilatus_geom_shape, dtype=np.bool)
+    for i in range(panels[0]):
+        for j in range(panels[1]):
+            gaps[i*panel_step[0]-(panel_step[0]-panel_shape[0]):i*panel_step[0], :] = False
+            gaps[:, j*panel_step[1]-(panel_step[1]-panel_shape[1]):j*panel_step[1]] = False
+    gaps[:, 0] = False
+    gaps[:, -1] = False
+    gaps[0, :] = False
+    gaps[-1, :] = False
+    return gaps
+
+def make_pilatus_sub_edges(
+    panWid = 487,
+    panHei = 195,
+    vGap = 17,
+    hGap = 7,
+    spanWid = 56,
+    spanHei = 91,
+    svGap = 5,
+    shGap = 5,
+    svGapEdge = 4,
+    shGapEdge = 2):
+    # load options from maskMaker.ini so the user can update parameters on the fly
+    ##############################################################################
+    # check the ini file for cheetah parameters
+    # fall back on defaults if not found
+    print('looking for maskMaker.ini')
+    ini = os.path.split(os.path.abspath(__file__))[0]
+    ini = os.path.join(ini, 'maskMaker.ini')
+
+    if os.path.exists(ini):
+        print('found it! loading params...')
+        config = configparser.ConfigParser()
+        config.read(ini)	
+        panWid = int(config['pilatus']['panWid'])
+        panHei = int(config['pilatus']['panHei'])
+        vGap = int(config['pilatus']['vGap'])
+        hGap = int(config['pilatus']['hGap'])
+        spanWid = int(config['pilatus']['spanWid'])
+        spanHei = int(config['pilatus']['spanHei'])
+        svGap = int(config['pilatus']['svGap'])
+        shGap = int(config['pilatus']['shGap'])
+        svGapEdge = int(config['pilatus']['svGapEdge'])
+        shGapEdge = int(config['pilatus']['shGapEdge'])
+
+    mask = np.ones(pilatus_geom_shape, dtype=np.bool)
+    maxSS, maxFS = mask.shape
+    # parameters of the Pilatus panels
+    nPanX = int(round((maxFS+hGap) / (panWid+hGap)))
+    nPanY = int(round((maxSS+vGap) / (panHei+vGap)))
+    if (nPanX*(panWid+hGap)-hGap != maxFS): print("something wrong with horizonal number of panels %d\n",nPanX)
+    if (nPanY*(panHei+vGap)-vGap != maxSS): print("something wrong with vertical number of panels %d\n",nPanY)
+    nsPanX = int(round((panWid-2*shGapEdge+shGap) / (spanWid+shGap)))
+    nsPanY = int(round((panHei-2*svGapEdge+svGap) // (spanHei+svGap)))
+    
+    # mask gaps
+    for pxi in range(nPanX-1):
+        mask[:, (panWid+hGap)*(pxi+1)-hGap : (panWid+hGap)*(pxi+1)] = False
+    
+    for pyi in range(nPanY-1):
+        mask[(panHei+vGap)*(pyi+1)-vGap : (panHei+vGap)*(pyi+1), :] = False
+    
+    for pxi in range(nPanX):
+        for pyi in range(nPanY):
+            conX = pxi*(panWid+hGap)
+            conY = pyi*(panHei+vGap)
+            
+            # between sub-asics vertically
+            for spxi in range(nsPanX-1):
+                mask[conY:conY+panHei, conX+shGapEdge+(spanWid+shGap)*(spxi+1)-shGap : conX+shGapEdge+(spanWid+shGap)*(spxi+1)] = False
+
+            # vertical edges of panels
+            for spxi in range(2):
+                mask[conY:conY+panHei, conX+(panWid-shGapEdge-1)*spxi: conX+(panWid-shGapEdge-1)*spxi+shGapEdge+1] = False
+
+            # between sub-asics horizontally
+            for spyi in range(nsPanY-1):
+                mask[conY+svGapEdge+(spanHei+svGap)*(spyi+1)-svGap : conY+svGapEdge+(spanHei+svGap)*(spyi+1), conX:conX+panWid] = False
+
+            # horizontal edges of panels
+            for spyi in range(2):
+                mask[conY+(panHei-svGapEdge)*spyi: conY+(panHei-svGapEdge)*spyi+svGapEdge, conX:conX+panWid] = False
+    return mask
+
 
 def unbonded_pixels():
     def ijkl_to_ss_fs(cspad_ijkl):
@@ -54,26 +232,35 @@ def unbonded_pixels():
     mask_pad = scipy.signal.convolve(1 - mask_slab.astype(np.float), kernal, mode = 'same') < 1
     return mask_pad
 
-def asic_edges(arrayin = None, pad = 0):
-    mask_edges = np.ones(cspad_geom_shape, dtype=np.bool)
-    mask_edges[:: 185, :] = 0
-    mask_edges[184 :: 185, :] = 0
-    mask_edges[:, :: 194] = 0
-    mask_edges[:, 193 :: 194] = 0
+def edges(shape, pad = 0, det_dict=None):
+    mask_edges = np.ones(shape, dtype=np.bool)
 
-    if pad != 0 :
-        mask_edges = scipy.signal.convolve(1 - mask_edges.astype(np.float), np.ones((pad, pad), dtype=np.float), mode = 'same') < 1
-    return mask_edges
-
-def edges(shape, pad = 0):
-    mask_edges = np.ones(shape)
-    mask_edges[0, :]  = 0
-    mask_edges[-1, :] = 0
-    mask_edges[:, 0]  = 0
-    mask_edges[:, -1] = 0
-
-    if pad != 0 :
-        mask_edges = scipy.signal.convolve(1 - mask_edges.astype(np.float), np.ones((pad, pad), dtype=np.float), mode = 'same') < 1
+    # if det_dict is None then load a default geometry 
+    if det_dict is None :
+        if shape == cspad_geom_shape :
+            print('loading default cspad geometry file for the panel edges')
+            geom_fnam = os.path.split(os.path.abspath(__file__))[0]
+            geom_fnam = os.path.join(geom_fnam, 'example/cspad-cxib2313-v9.geom')
+            x_map, y_map, det_dict = gf.pixel_maps_from_geometry_file(geom_fnam, return_dict = True)
+    
+    # loop over panels
+    if det_dict is not None :
+        for p in det_dict.keys():
+            i = [det_dict[p]['min_ss'], det_dict[p]['max_ss'] + 1, det_dict[p]['min_fs'], det_dict[p]['max_fs'] + 1]
+            mask_edges[i[0]:i[1], i[2]: min(i[3],i[2]+pad+1)] = False
+            mask_edges[i[0]:i[1], max(i[2],i[3]-pad-1): i[3]] = False
+            mask_edges[i[0]: min(i[1],i[0]+pad+1), i[2]:i[3]] = False
+            mask_edges[max(i[0],i[1]-pad-1): i[1], i[2]:i[3]] = False
+     
+    elif shape == pilatus_geom_shape :
+        # no padding yet
+        mask_edges = make_pilatus_edges()
+    
+    else :
+        mask_edges[:, : pad+1] = False
+        mask_edges[:, -pad-1:] = False
+        mask_edges[: pad+1, :] = False
+        mask_edges[-pad-1:, :] = False
     return mask_edges
 
 def dilate(mask):
@@ -93,10 +280,15 @@ class Application:
         elif cspad.shape == (1480, 1552):
             self.cspad_shape_flag = 'slab'
             self.cspad = cspad
+        elif cspad.shape == pilatus_geom_shape :
+            self.cspad_shape_flag = 'pilatus'
+            self.cspad = cspad
         else :
             # this is not in fact a cspad image
             self.cspad_shape_flag = 'other'
             self.cspad = cspad
+
+        print(self.cspad_shape_flag)
             
         self.mask  = np.ones_like(self.cspad, dtype=np.bool)
         self.geom_fnam = geom_fnam
@@ -118,12 +310,13 @@ class Application:
             i, j = np.meshgrid(range(self.cspad.shape[0]), range(self.cspad.shape[1]), indexing='ij')
             self.y_map, self.x_map = (i-self.cspad.shape[0]//2, j-self.cspad.shape[1]//2)
             self.cspad_shape = self.cspad.shape
+            self.det_dict    = None
 
         self.mask_edges    = False
         self.mask_unbonded = False
 
         self.unbonded_pixels = unbonded_pixels()
-        self.asic_edges      = asic_edges()
+        self.asic_edges      = edges(self.mask.shape, 0, self.det_dict)
         if mask is not None :
             self.mask_clicked  = mask
         else :
@@ -173,6 +366,54 @@ class Application:
             self.mask *= self.asic_edges
 
         self.mask *= self.mask_clicked
+
+    def mask_unbonded_pixels(self):
+        print('masking unbonded pixels')
+        if self.toggle_checkbox.isChecked():
+            self.mask_clicked[~self.unbonded_pixels] = ~self.mask_clicked[~self.unbonded_pixels]
+        elif self.mask_checkbox.isChecked():
+            self.mask_clicked[~self.unbonded_pixels] = False
+        elif self.unmask_checkbox.isChecked():
+            self.mask_clicked[~self.unbonded_pixels] = True
+        
+        self.generate_mask()
+        self.updateDisplayRGB()
+
+    def mask_olek_edge_pixels(self):
+        print('masking Oleksandr edges')
+        edges = make_pilatus_sub_edges()
+        if self.toggle_checkbox.isChecked():
+            self.mask_clicked[~edges] = ~self.mask_clicked[~edges]
+        elif self.mask_checkbox.isChecked():
+            self.mask_clicked[~edges] = False
+        elif self.unmask_checkbox.isChecked():
+            self.mask_clicked[~edges] = True
+        
+        self.generate_mask()
+        self.updateDisplayRGB()
+
+    def mask_edge_pixels(self):
+        print('masking panel edges')
+        if self.toggle_checkbox.isChecked():
+            self.mask_clicked[~self.asic_edges] = ~self.mask_clicked[~self.asic_edges]
+        elif self.mask_checkbox.isChecked():
+            self.mask_clicked[~self.asic_edges] = False
+        elif self.unmask_checkbox.isChecked():
+            self.mask_clicked[~self.asic_edges] = True
+        
+        self.generate_mask()
+        self.updateDisplayRGB()
+
+    def update_mask_edges(self, state):
+        if state > 0 :
+            print('adding asic edges to the mask')
+            self.mask_edges = True
+        else :
+            print('removing asic edges from the mask')
+            self.mask_edges = False
+        
+        self.generate_mask()
+        self.updateDisplayRGB()
 
     def update_mask_unbonded(self, state):
         if state > 0 :
@@ -349,7 +590,7 @@ class Application:
         self.toggle_checkbox   = QtGui.QCheckBox('toggle')
         self.mask_checkbox     = QtGui.QCheckBox('mask')
         self.unmask_checkbox   = QtGui.QCheckBox('unmask')
-        self.toggle_checkbox.setChecked(True)   
+        self.mask_checkbox.setChecked(True)   
         
         toggle_group           = QtGui.QButtonGroup()#"masking behaviour")
         toggle_group.addButton(self.toggle_checkbox)   
@@ -357,6 +598,16 @@ class Application:
         toggle_group.addButton(self.unmask_checkbox)   
         toggle_group.setExclusive(True)
         
+        # unbonded pixels button
+        unbonded_button = QtGui.QPushButton('unbonded pixels')
+        unbonded_button.clicked.connect( self.mask_unbonded_pixels )
+        if self.cspad_shape_flag in ['psana', 'psana2', 'slab']:
+            unbonded_button.setEnabled(False)
+        
+        # asic edges button
+        edges_button = QtGui.QPushButton('panel edges')
+        edges_button.clicked.connect( self.mask_edge_pixels )
+
         # mouse hover ij value label
         ij_label = QtGui.QLabel()
         disp = 'ss fs {0:5} {1:5}   value {2:2}'.format('-', '-', '-')
@@ -377,7 +628,7 @@ class Application:
         
         # mouse click mask 
         self.plot.scene.sigMouseClicked.connect( lambda click: self.mouseClicked(self.plot, click) )
-
+        
         ## Add widgets to the layout in their proper positions
         # stack up sidepanel widgets
         vbox = QtGui.QVBoxLayout()
@@ -387,12 +638,28 @@ class Application:
         vbox.addWidget(hist_button)
         vbox.addWidget(dilate_button)
         vbox.addWidget(errode_button)
+        vbox.addWidget(unbonded_button)
+        vbox.addWidget(edges_button)
+        
+        # asic sub-panel edges button
+        if self.cspad_shape_flag == 'pilatus':
+            olek_edges_button = QtGui.QPushButton('more edges')
+            olek_edges_button.clicked.connect( self.mask_olek_edge_pixels )
+            vbox.addWidget(olek_edges_button)
+        
+        # cheetah mask button
+        if self.geom_fnam is not None :
+            cheetah_mask_button = QtGui.QPushButton('cheetah threshold')
+            cheetah_mask_button.clicked.connect(self.make_cheetah_mask)
+            vbox.addWidget(cheetah_mask_button)
+        
         vbox.addWidget(self.toggle_checkbox)
         vbox.addWidget(self.mask_checkbox)
         vbox.addWidget(self.unmask_checkbox)
+        
         vbox.addStretch(1)
-        vbox.addWidget(unbonded_checkbox)
-        vbox.addWidget(edges_checkbox)
+        #vbox.addWidget(unbonded_checkbox)
+        #vbox.addWidget(edges_checkbox)
         
         # Create a grid layout to manage the widgets size and position
         layout = QtGui.QGridLayout()
@@ -419,6 +686,20 @@ class Application:
         ## Start the Qt event loop
         app.exec_()
     
+    def make_cheetah_mask(self):
+        mask = cheetah_mask(self.cspad.astype(np.float), self.mask_clicked, self.x_map, self.y_map, adc_thresh=20, min_snr=6, counter = 5)
+        
+        print('masking cheetah pixels')
+        if self.toggle_checkbox.isChecked():
+            self.mask_clicked[~mask] = ~self.mask_clicked[~mask]
+        elif self.mask_checkbox.isChecked():
+            self.mask_clicked[~mask] = False
+        elif self.unmask_checkbox.isChecked():
+            self.mask_clicked[~mask] = True
+        
+        self.generate_mask()
+        self.updateDisplayRGB()
+
     def mouseMoved(self, ij_label, pos):
         img = self.plot.getImageItem()
         if self.geom_fnam is not None :

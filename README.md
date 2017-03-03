@@ -33,7 +33,14 @@ optional arguments:
 ```
 $ git clone https://github.com/andyofmelbourne/Ptychography.git
 $ cd CsPadMaskMaker
+```
+CsPad:
+```
 $ ./maskMakerGUI.py example/LA93-r0014-CxiDs1-darkcal.h5 data/data -g example/cspad-cxib2313-v9.geom
+```
+Pilatus:
+```
+$ ./maskMakerGUI.py example/sk_18_5_00001.h5 data/data -g example/pilatus6M_P14_15A_foc_cen.geom
 ```
 
 ### Alternative
