@@ -413,15 +413,7 @@ class Application:
             self.plot.setImage(self.display_RGB, autoRange = False, autoLevels = False, autoHistogramRange = False)
 
     def generate_mask(self):
-        self.mask.fill(1)
-
-        if self.mask_unbonded :
-            self.mask *= self.unbonded_pixels
-
-        if self.mask_edges :
-            self.mask *= self.asic_edges
-
-        self.mask *= self.mask_clicked
+        self.mask = self.mask_clicked
 
     def mask_unbonded_pixels(self):
         print('masking unbonded pixels')
@@ -507,6 +499,8 @@ class Application:
         elif self.cspad_shape_flag == 'slab' :
             mask = self.mask
         elif self.cspad_shape_flag == 'other' :
+            mask = self.mask
+        else :
             mask = self.mask
         
         print('outputing mask as np.int16 (h5py does not support boolean arrays yet)...')
@@ -743,10 +737,11 @@ class Application:
         app.exec_()
     
     def make_cheetah_mask(self):
-        mask = cheetah_mask(self.cspad.astype(np.float), self.mask_clicked, self.x_map, self.y_map, adc_thresh=20, min_snr=6, counter = 5)
+        mask = cheetah_mask(self.cspad.astype(np.float), self.mask_clicked.copy(), self.x_map, self.y_map, adc_thresh=20, min_snr=6, counter = 5)
         
         print('masking cheetah pixels')
         if self.toggle_checkbox.isChecked():
+            print(mask.dtype, np.sum(~mask))
             self.mask_clicked[~mask] = ~self.mask_clicked[~mask]
         elif self.mask_checkbox.isChecked():
             self.mask_clicked[~mask] = False
