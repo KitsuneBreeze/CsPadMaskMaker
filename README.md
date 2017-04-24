@@ -31,7 +31,7 @@ optional arguments:
 
 ### Example
 ```
-$ git clone https://github.com/andyofmelbourne/Ptychography.git
+$ git clone https://github.com/andyofmelbourne/CsPadMaskMaker.git
 $ cd CsPadMaskMaker
 ```
 CsPad:
