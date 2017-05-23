@@ -374,7 +374,7 @@ class Application:
         self.unbonded_pixels = unbonded_pixels()
         self.asic_edges      = edges(self.mask.shape, 0, self.det_dict)
         if mask is not None :
-            self.mask_clicked  = mask
+            self.mask_clicked  = mask.copy()
         else :
             self.mask_clicked  = np.ones_like(self.mask)
 
@@ -413,7 +413,7 @@ class Application:
             self.plot.setImage(self.display_RGB, autoRange = False, autoLevels = False, autoHistogramRange = False)
 
     def generate_mask(self):
-        self.mask = self.mask_clicked
+        self.mask = self.mask_clicked.copy()
 
     def mask_unbonded_pixels(self):
         print('masking unbonded pixels')
@@ -829,8 +829,10 @@ if __name__ == '__main__':
     # load the image
     f = h5py.File(args.cspad_fnam, 'r')
     cspad = f[args.h5path].value
+    # remove single dimensional entries
+    cspad = np.squeeze(cspad)
     f.close()
-
+    
     # load the predefined mask
     if args.mask is not None :
         if args.mask_h5path is not None :
