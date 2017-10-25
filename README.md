@@ -38,10 +38,6 @@ CsPad:
 ```
 $ ./maskMakerGUI.py example/LA93-r0014-CxiDs1-darkcal.h5 data/data -g example/cspad-cxib2313-v9.geom
 ```
-Pilatus:
-```
-$ ./maskMakerGUI.py example/sk_18_5_00001.h5 data/data -g example/pilatus6M_P14_15A_foc_cen.geom
-```
 
 ### Alternative
 SLAC has an alternative mask making GUI (which I have not tried yet) but it could be a better option if you have access https://confluence.slac.stanford.edu/display/PSDM/Mask+Editor.
