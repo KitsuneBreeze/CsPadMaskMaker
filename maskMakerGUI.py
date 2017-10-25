@@ -20,7 +20,7 @@ import os
 try :
     import ConfigParser as configparser 
 except ImportError :
-	import configparser 
+    import configparser 
 
 cspad_psana_shape = (4, 8, 185, 388)
 cspad_geom_shape  = (1480, 1552)
