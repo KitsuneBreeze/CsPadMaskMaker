@@ -34,7 +34,7 @@ def pixel_maps_from_geometry_file(fnam, return_dict = False):
 
     detector_dict = {}
 
-    panel_lines = [ x for x in f_lines if '/' in x ]
+    panel_lines = [ x for x in f_lines if '/' in x and 'bad' not in x]
 
     for pline in panel_lines:
         items = pline.split('=')[0].split('/')
