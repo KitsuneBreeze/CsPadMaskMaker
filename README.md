@@ -1,6 +1,8 @@
 # CsPadMaskMaker
 graphical interface for making a pixel mask of the cspad
 
+PLEASE NOTICE: This software does not work with multi-event CXI files. It requires a 1-event 2D data file to work.
+
 ```
 $ python maskMakerGUI.py -h
 usage: maskMakerGUI.py [-h] [-g GEOMETRY] [-m MASK] [-mp MASK_H5PATH]
