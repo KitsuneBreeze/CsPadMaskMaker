@@ -611,7 +611,7 @@ class Application:
             self.plot.addItem(self.brush_img)
             kernel = self.generate_brush_kernel()
             self.brush_img.setLevels([0, 1])
-            self.brush_img.setDrawKernel(kernel, mask=kernel, center=(1,1), mode='set')
+            self.brush_img.setDrawKernel(kernel, mask=kernel, center=(kernel.shape[0]//2, kernel.shape[1]//2), mode='set')
         elif self.brush_img:
             self.discard_brush()
 
@@ -619,7 +619,7 @@ class Application:
         if self.brush_img:
             kernel = self.generate_brush_kernel()
             self.brush_img.setLevels([0, 1])
-            self.brush_img.setDrawKernel(kernel, mask=kernel, center=(1,1), mode='set')
+            self.brush_img.setDrawKernel(kernel, mask=kernel, center=(kernel.shape[0]//2, kernel.shape[1]//2), mode='set')
         else:
             pass
 
