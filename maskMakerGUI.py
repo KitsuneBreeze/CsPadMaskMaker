@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -594,6 +594,89 @@ class Application:
         self.generate_mask()
         self.updateDisplayRGB()
 
+    def generate_brush_kernel(self):
+        size = self.brush_size.value()
+        r = size/2.
+        cx, cy = (size - 1)/2., (size - 1)/2.
+        x, y = np.ogrid[-cx:size-cx, -cy:size-cy]
+        kernel = np.zeros((size, size, 4))
+        kernel[:,:,0][x*x + y*y < r*r] = 1
+        kernel[:,:,3][x*x + y*y < r*r] = 1
+        return kernel
+
+    def use_brush(self):
+        if self.brush_button.isChecked():
+            img = self.plot.getImageItem()
+            self.brush_img = pg.ImageItem(np.zeros((img.image.shape[0], img.image.shape[1], 4)))
+            self.plot.addItem(self.brush_img)
+            kernel = self.generate_brush_kernel()
+            self.brush_img.setLevels([0, 1])
+            self.brush_img.setDrawKernel(kernel, mask=kernel, center=(1,1), mode='set')
+        elif self.brush_img:
+            self.discard_brush()
+
+    def change_brush(self):
+        if self.brush_img:
+            kernel = self.generate_brush_kernel()
+            self.brush_img.setLevels([0, 1])
+            self.brush_img.setDrawKernel(kernel, mask=kernel, center=(1,1), mode='set')
+        else:
+            pass
+
+    def discard_brush(self):
+        self.plot.removeItem(self.brush_img)
+        self.brush_img.clear()
+        self.brush_img = None
+        if self.brush_button.isChecked():
+            self.brush_button.toggle()
+    
+    def add_brush(self):
+        if self.geom_fnam is not None :
+            for j0, i0 in np.transpose(np.where(self.brush_img.image[:,:,0] > 0)):
+                i1 = self.cspad_shape[0] - 1 - i0 # array ss (with the fliplr and .T)
+                j1 = j0                           # array fs (with the fliplr and .T)
+                if (0 <= i1 < self.cspad_shape[0]) and (0 <= j1 < self.cspad_shape[1]):
+                    i = self.ss_geom[i1, j1]  # un-geometry corrected ss
+                    j = self.fs_geom[i1, j1]  # un-geometry corrected fs
+                    if i == 0 and j == 0 and i1 != 0 and j1 != 0 :
+                        continue 
+                    else :
+                        if self.toggle_checkbox.isChecked():
+                            self.mask_clicked[i, j] = ~self.mask_clicked[i, j]
+                            self.mask[i, j]         = ~self.mask[i, j]
+                        elif self.mask_checkbox.isChecked():
+                            self.mask_clicked[i, j] = False
+                            self.mask[i, j]         = False
+                        elif self.unmask_checkbox.isChecked():
+                            self.mask_clicked[i, j] = True
+                            self.mask[i, j]         = True
+                        
+                        if self.mask[i, j] :
+                            self.display_RGB[j0, i0, :] = np.array([1,1,1]) * self.cspad[i, j]
+                        else :
+                            self.display_RGB[j0, i0, :] = np.array([0,0,1]) * self.cspad_max
+        else :
+            for j0, i0 in np.transpose(np.where(self.brush_img.image[:,:,0] > 0)):
+                i1 = self.cspad.shape[0] - 1 - i0 # array ss (with the fliplr and .T)
+                j1 = j0                           # array fs (with the fliplr and .T)
+                if (0 <= i1 < self.cspad.shape[0]) and (0 <= j1 < self.cspad.shape[1]):
+                    if self.toggle_checkbox.isChecked():
+                        self.mask_clicked[i1, j1] = ~self.mask_clicked[i1, j1]
+                        self.mask[i1, j1]         = ~self.mask[i1, j1]
+                    elif self.mask_checkbox.isChecked():
+                        self.mask_clicked[i1, j1] = False
+                        self.mask[i1, j1]         = False
+                    elif self.unmask_checkbox.isChecked():
+                        self.mask_clicked[i1, j1] = True
+                        self.mask[i1, j1]         = True
+                    if self.mask[i1, j1] :
+                        self.display_RGB[j0, i0, :] = np.array([1,1,1]) * self.cspad[i1, j1]
+                    else :
+                        self.display_RGB[j0, i0, :] = np.array([0,0,1]) * self.cspad_max
+
+        self.discard_brush()
+        self.plot.setImage(self.display_RGB, autoRange = False, autoLevels = False, autoHistogramRange = False)
+
     def initUI(self):
         signal.signal(signal.SIGINT, signal.SIG_DFL) # allow Control-C
         
@@ -636,6 +719,21 @@ class Application:
         errode_button = QtGui.QPushButton('errode mask')
         errode_button.clicked.connect(self.errode_mask)
         
+        # Brush
+        self.brush_img = None
+        self.brush_button = QtGui.QPushButton('brush')
+        self.brush_button.clicked.connect(self.use_brush)
+        self.brush_button.setCheckable(True)
+
+        self.brush_size = QtGui.QSpinBox(value=10, minimum=1)
+        self.brush_size.valueChanged.connect(self.change_brush)
+
+        add_button = QtGui.QPushButton('add')
+        add_button.clicked.connect(self.add_brush)
+
+        discard_button = QtGui.QPushButton('discard')
+        discard_button.clicked.connect(self.discard_brush)
+
         # toggle / mask / unmask checkboxes
         self.toggle_checkbox   = QtGui.QCheckBox('toggle')
         self.mask_checkbox     = QtGui.QCheckBox('mask')
@@ -706,7 +804,15 @@ class Application:
         vbox.addWidget(self.toggle_checkbox)
         vbox.addWidget(self.mask_checkbox)
         vbox.addWidget(self.unmask_checkbox)
-        
+
+        brush_layout = QtGui.QGridLayout()
+        brush_layout.addWidget(self.brush_button, 0, 0)
+        brush_layout.addWidget(self.brush_size, 0, 1)
+        brush_layout.addWidget(add_button, 1, 0)
+        brush_layout.addWidget(discard_button, 1, 1)
+
+        vbox.addLayout(brush_layout)
+
         vbox.addStretch(1)
         #vbox.addWidget(unbonded_checkbox)
         #vbox.addWidget(edges_checkbox)
@@ -736,6 +842,7 @@ class Application:
         ## Start the Qt event loop
         app.exec_()
     
+
     def make_cheetah_mask(self):
         mask = cheetah_mask(self.cspad.astype(np.float), self.mask_clicked.copy(), self.x_map, self.y_map, adc_thresh=20, min_snr=6, counter = 5)
         
@@ -813,6 +920,7 @@ class Application:
                         self.display_RGB[j0, i0, :] = np.array([0,0,1]) * self.cspad_max
             
             self.plot.setImage(self.display_RGB, autoRange = False, autoLevels = False, autoHistogramRange = False)
+
 
 def parse_cmdline_args():
     parser = argparse.ArgumentParser(description='CsPadMaskMaker - mask making, but with a mouse!')
