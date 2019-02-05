@@ -7,9 +7,9 @@ from __future__ import unicode_literals
 import argparse
 import h5py
 try:
-    from PyQt5 import QtGui
+    from PyQt5 import QtGui, QtCore
 except :
-    from PyQt4 import QtGui
+    from PyQt4 import QtGui, QtCore
 import pyqtgraph as pg
 import numpy as np
 import scipy
@@ -606,6 +606,7 @@ class Application:
 
     def use_brush(self):
         if self.brush_button.isChecked():
+            self.app.setOverrideCursor(QtCore.Qt.CrossCursor)
             img = self.plot.getImageItem()
             self.brush_img = pg.ImageItem(np.zeros((img.image.shape[0], img.image.shape[1], 4)))
             self.plot.addItem(self.brush_img)
@@ -624,6 +625,7 @@ class Application:
             pass
 
     def discard_brush(self):
+        self.app.restoreOverrideCursor()
         self.plot.removeItem(self.brush_img)
         self.brush_img.clear()
         self.brush_img = None
@@ -681,7 +683,7 @@ class Application:
         signal.signal(signal.SIGINT, signal.SIG_DFL) # allow Control-C
         
         # Always start by initializing Qt (only once per application)
-        app = QtGui.QApplication([])
+        self.app = QtGui.QApplication([])
 
         # Define a top-level widget to hold everything
         w = QtGui.QWidget()
@@ -840,7 +842,7 @@ class Application:
         w.show()
         
         ## Start the Qt event loop
-        app.exec_()
+        self.app.exec_()
     
 
     def make_cheetah_mask(self):
@@ -872,6 +874,8 @@ class Application:
 #                ij_label.setText('ss fs value: ' + str(ij[0]).rjust(5) + str(ij[1]).rjust(5) + str(self.cspad[ij[0], ij[1]]).rjust(8) )
 
     def mouseClicked(self, plot, click):
+        if self.brush_button.isChecked():
+            return
         if click.button() == 1:
             img = plot.getImageItem()
             if self.geom_fnam is not None :
