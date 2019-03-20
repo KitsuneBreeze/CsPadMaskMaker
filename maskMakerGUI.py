@@ -625,14 +625,17 @@ class Application:
             pass
 
     def discard_brush(self):
-        self.app.restoreOverrideCursor()
-        self.plot.removeItem(self.brush_img)
-        self.brush_img.clear()
-        self.brush_img = None
         if self.brush_button.isChecked():
+            self.app.restoreOverrideCursor()
+            self.plot.removeItem(self.brush_img)
+            self.brush_img.clear()
+            self.brush_img = None
             self.brush_button.toggle()
     
     def add_brush(self):
+        if not self.brush_button.isChecked():
+            return
+        
         if self.geom_fnam is not None :
             for j0, i0 in np.transpose(np.where(self.brush_img.image[:,:,0] > 0)):
                 i1 = self.cspad_shape[0] - 1 - i0 # array ss (with the fliplr and .T)
