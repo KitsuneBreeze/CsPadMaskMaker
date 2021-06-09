@@ -943,7 +943,7 @@ if __name__ == '__main__':
 
     # load the image
     f = h5py.File(args.cspad_fnam, 'r')
-    cspad = f[args.h5path].value
+    cspad = f[args.h5path][()]
     # remove single dimensional entries
     cspad = np.squeeze(cspad)
     f.close()
@@ -955,7 +955,7 @@ if __name__ == '__main__':
         else :
             path = '/data/data'
         f = h5py.File(args.mask, 'r')
-        mask = f[path].value.astype(np.bool)
+        mask = f[path][()].astype(np.bool)
         f.close()
     else :
         mask = None
