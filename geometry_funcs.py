@@ -4,10 +4,63 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import numpy as np
+from datetime import date
+import os.path
+import re
 
 cspad_psana_shape = (4, 8, 185, 388)
 cspad_geom_shape  = (1480, 1552)
 
+def converter_to_slab_format(data):
+    data_shape = data.shape
+    if len(data_shape) > 3:
+        new_shape = (data_shape[1] * data_shape[2], data_shape[3])
+        data = np.reshape(data[0,].ravel(), new_shape)
+    else:
+        new_shape = (data_shape[0] * data_shape[1], data_shape[2])
+        data = np.reshape(data.ravel(), new_shape)
+    
+    #print('NEW DATA SHAPE IS ' + str(data.shape))
+    return data
+    
+    
+
+def geometry_converter(in_geom_file_name):
+    in_geom = open(in_geom_file_name, 'r')  # from
+    path_geom = in_geom_file_name.split(os.path.basename(in_geom_file_name))[0]
+    out_geom_file_name = 'slab-format-'+os.path.basename(in_geom_file_name)
+    out_geom_file_name = os.path.join(path_geom, out_geom_file_name)
+    out_geom = open(out_geom_file_name, 'w') # to
+    
+    today = date.today()
+    out_geom.write('; This geometry file {} was made from {}, {}\n'.format(out_geom_file_name, in_geom_file_name,today.strftime("%d-%b-%Y")))
+    
+    check_list = ['/dim1','/dim2','/dim3']
+    for line in in_geom:
+        if line.startswith(';dim2 '):
+            line = 'dim1 = '+line.split(' = ')[1]
+            out_geom.write(line)
+        elif line.startswith(';dim3 '):
+            line = 'dim2 = '+line.split(' = ')[1]
+            out_geom.write(line)
+        elif any(item in line for item in check_list): 
+            # '/dim1' in line or '/dim2' in line or '/dim3' in line
+            pass
+        else:
+            s = line.split(' = ')[0].split('/')
+            if len(s) == 2 and s[1] in ('min_ss', 'max_ss'):
+                s = line.split(' = ')
+                if len(s) == 2:
+                    num_panel = int(re.findall(r'[\d\.]+', s[0])[0])
+                    
+                    v = int(s[1]) + num_panel * 512 # or (num_panel -1)*512+ss
+                    # num_panel += 1 
+                    out_geom.write('%s = %d\n'%(s[0], v))
+            else:
+                out_geom.write(line)
+    in_geom.close()
+    out_geom.close()
+    return out_geom_file_name
 
 def pixel_maps_from_geometry_file(fnam, return_dict = False):
     """
@@ -34,7 +87,8 @@ def pixel_maps_from_geometry_file(fnam, return_dict = False):
 
     detector_dict = {}
 
-    panel_lines = [ x for x in f_lines if '/' in x and 'bad' not in x]
+    panel_lines = [ x for x in f_lines if '/' in x and 'bad' not in x and not x.startswith(";")]
+    
 
     for pline in panel_lines:
         items = pline.split('=')[0].split('/')
@@ -49,19 +103,22 @@ def pixel_maps_from_geometry_file(fnam, return_dict = False):
     parsed_detector_dict = {}
 
     for p in detector_dict.keys():
-
+        
         parsed_detector_dict[p] = {}
+        
 
-        parsed_detector_dict[p]['min_fs'] = int( detector_dict[p]['min_fs'] )
-        parsed_detector_dict[p]['max_fs'] = int( detector_dict[p]['max_fs'] )
-        parsed_detector_dict[p]['min_ss'] = int( detector_dict[p]['min_ss'] )
-        parsed_detector_dict[p]['max_ss'] = int( detector_dict[p]['max_ss'] )
+        
+        parsed_detector_dict[p]['min_fs'] = int( float(detector_dict[p]['min_fs'] ))
+        parsed_detector_dict[p]['max_fs'] = int( float(detector_dict[p]['max_fs'] ))
+        parsed_detector_dict[p]['min_ss'] = int( float(detector_dict[p]['min_ss'] ))
+        parsed_detector_dict[p]['max_ss'] = int( float(detector_dict[p]['max_ss'] ))
         parsed_detector_dict[p]['fs'] = []
         parsed_detector_dict[p]['fs'].append( float( detector_dict[p]['fs'].split('x')[0] ) )
         parsed_detector_dict[p]['fs'].append( float( detector_dict[p]['fs'].split('x')[1].split('y')[0] ) )
         parsed_detector_dict[p]['ss'] = []
         parsed_detector_dict[p]['ss'].append( float( detector_dict[p]['ss'].split('x')[0] ) )
         parsed_detector_dict[p]['ss'].append( float( detector_dict[p]['ss'].split('x')[1].split('y')[0] ) )
+ 
         parsed_detector_dict[p]['corner_x'] = float( detector_dict[p]['corner_x'] )
         parsed_detector_dict[p]['corner_y'] = float( detector_dict[p]['corner_y'] )
 
@@ -91,6 +148,80 @@ def pixel_maps_from_geometry_file(fnam, return_dict = False):
         return x, y, parsed_detector_dict
     else :
         return x, y
+
+def get_lines_from_geom(fnam):
+    f = open(fnam, 'r')
+    f_lines = []
+    for line in f:
+        if len(line.lstrip()) > 0 and line.lstrip()[0] != ';':
+            f_lines.append(line)
+    return f_lines
+
+def read_geometry_file_preamble(fnam):
+    # get everything from the file
+    f_lines = get_lines_from_geom(fnam)
+    
+    # get the detector distance offset from the encoded values (meters)
+    preamble = {}
+
+    preamble['clen'] = [l for l in f_lines if 'clen' in l and not(l.startswith(";"))]
+    if len(preamble['clen']) == 0:
+        preamble['clen'] = None
+    else:
+        preamble['clen'] = preamble['clen'][0].rsplit()[2]
+        #print([l for l in f_lines if 'clen' in l][0].rsplit()[2])
+
+    preamble['photon_energy'] = [l for l in f_lines if 'photon_energy' in l and not(l.startswith(";"))]
+    if len(preamble['photon_energy']) == 0:
+        preamble['photon_energy'] = None
+    else:
+        preamble['photon_energy'] = preamble['photon_energy'][0].rsplit()[2]
+        #print([l for l in f_lines if 'clen' in l][0].rsplit()[2])
+
+    preamble['coffset'] = [l for l in f_lines if 'coffset' in l and not(l.startswith(";"))]
+    if len(preamble['coffset']) == 0:
+        preamble['coffset'] = None
+    else:
+        preamble['coffset'] = float(preamble['coffset'][0].rsplit()[2])
+        #preamble['coffset']    = float([l for l in f_lines if 'coffset' in l][0].rsplit()[2])
+
+    preamble['adu_per_eV'] = [l for l in f_lines if 'adu_per_eV' in l and not(l.startswith(";"))]
+    if len(preamble['adu_per_eV']) == 0:
+        preamble['adu_per_eV'] = None
+    else:
+        preamble['adu_per_eV'] = float(preamble['adu_per_eV'][0].rsplit()[2])
+        #preamble['adu_per_eV'] = float([l for l in f_lines if 'adu_per_eV' in l][0].rsplit()[2])
+
+    preamble['adu_per_photon'] = [l for l in f_lines if 'adu_per_photon' in l and not(l.startswith(";"))]
+    if len(preamble['adu_per_photon']) == 0:
+        preamble['adu_per_photon'] = None
+    else:
+        preamble['adu_per_photon'] = float(preamble['adu_per_photon'][0].rsplit()[2])
+        #preamble['adu_per_photon'] = float([l for l in f_lines if 'adu_per_photon' in l][0].rsplit()[2])
+
+    preamble['res'] = [l for l in f_lines if 'res' in l and not(l.startswith(";"))]
+    if len(preamble['res']) == 0:
+        preamble['res'] = None
+    else:
+        preamble['res'] = float(preamble['res'][0].rsplit()[2])
+        #preamble['res'] = float([l for l in f_lines if 'res' in l][0].rsplit()[2])
+    
+    preamble['mask'] = [l for l in f_lines if 'mask' in l and not(l.startswith(";"))]
+    if len(preamble['mask']) == 0:
+        preamble['mask'] = None
+    else:
+        preamble['mask'] = preamble['mask'][0].rsplit()[2]
+        #print([l for l in f_lines if 'clen' in l][0].rsplit()[2])
+
+    return preamble
+
+def is_float_try(str):
+    try:
+        float(str)
+        return True
+    except ValueError:
+        return False
+
 
 def read_geometry_file(fnam, return_preamble = False):
     # get everything from the file

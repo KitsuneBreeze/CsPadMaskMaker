@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -7,9 +7,9 @@ from __future__ import unicode_literals
 import argparse
 import h5py
 try:
-    from PyQt5 import QtGui
+    from PyQt5 import QtGui, QtCore
 except :
-    from PyQt4 import QtGui
+    from PyQt4 import QtGui, QtCore
 import pyqtgraph as pg
 import numpy as np
 import scipy
@@ -17,10 +17,30 @@ import geometry_funcs as gf
 import signal
 import os
 
+from functools import partial
+
 try :
     import ConfigParser as configparser 
 except ImportError :
     import configparser 
+
+import ctypes as ct
+
+import numpy.linalg as ln
+
+from struct import *
+
+from scipy import stats, ndimage, misc
+
+
+# constant values
+MinVal=1e-10
+bstpReg=-0.5
+hitfinderMinSNR=4.0 
+ADCthresh=0.0
+istep=1
+degree=0.99
+
 
 cspad_psana_shape = (4, 8, 185, 388)
 cspad_geom_shape  = (1480, 1552)
@@ -158,6 +178,127 @@ def cheetah_mask(data, mask, x, y, adc_thresh=20, min_snr=6, counter = 5):
 
         mask_temp *= (data < rthreshold[rs].reshape(data.shape))
     return mask_temp
+
+def _np_ptr(np_array):
+    return ct.c_void_p(np_array.ctypes.data)
+
+def background(inpAr, stx, enx, sty, eny, fNumX, radX, radY, badVal, smoothedAr):
+    # bool SubLocalBG(float* inpAr, int stx, int enx, int sty, int eny, int fNumX, int radX, int radY, float badVal, float* smoothedAr)
+    #print("background")
+    inpAr = np.array(inpAr, dtype=np.float32)
+    lib = ct.CDLL('/gpfs/cfel/cxi/scratch/data/2020/EXFEL-2019-Schmidt-Mar-p002450/scratch/galchenm/scripts_for_work/to_change/new/CsPadMaskMaker-alexandra/SubLocalBG.so' )
+    pfun = lib.SubLocalBG 
+    pfun.restype = ct.c_int
+    pfun.argtypes = (ct.c_void_p, ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_int, ct.c_float, ct.c_void_p)
+    flag = pfun(_np_ptr(inpAr), stx, enx, sty, eny, fNumX, radX, radY, badVal, smoothedAr)
+    return flag, inpAr
+
+def pSubtractBgLoop(data, pix_nn, pix_r, hitfinderMinSNR, ADCthresh, bstpReg, radialcurve): 
+    #void SubtractBgLoop(float* data, long pix_nn, int *pix_r, float hitfinderMinSNR, float ADCthresh, float bstpReg, float* radialcurve)
+    #print("pSubtractBgLoop")
+    data = np.array(data, dtype=np.float32)
+    pix_r = np.array(pix_r, dtype=np.int32)
+    len_radialcurve = max(pix_r)
+
+    lib = ct.CDLL('/gpfs/cfel/cxi/scratch/data/2020/EXFEL-2019-Schmidt-Mar-p002450/scratch/galchenm/scripts_for_work/to_change/new/CsPadMaskMaker-alexandra/SubLocalBG.so' )
+    pfun = lib.SubtractBgLoop
+    pfun.restype = None
+    if radialcurve is None:
+        radialcurve = ct.POINTER(ct.c_int)()
+        pfun.argtypes = (ct.c_void_p, ct.c_long, ct.c_void_p, ct.c_float, ct.c_float, ct.c_float, ct.POINTER(ct.c_int))
+        pfun(_np_ptr(data),pix_nn, _np_ptr(pix_r), hitfinderMinSNR, ADCthresh, bstpReg, radialcurve)
+    else:
+        radialcurve = np.array([0]*len_radialcurve, dtype=np.float32)
+        pfun.argtypes = (ct.c_void_p, ct.c_long, ct.c_void_p, ct.c_float, ct.c_float, ct.c_float, ct.c_void_p)
+        pfun(_np_ptr(data),pix_nn, _np_ptr(pix_r), hitfinderMinSNR, ADCthresh, bstpReg, _np_ptr(radialcurve))
+    return radialcurve, data
+
+def pBuildRadiulArray(NxNy, det_x, det_y, istep, pix_r, maxRad, pixelsR):
+    #bool BuildRadialArray(size_t numEl, float *cox, float* coy, float istep, int* pix_r, int* maxRad, float* pixelsR)
+    det_x = np.array(det_x, dtype=np.float32)
+    det_y = np.array(det_y, dtype=np.float32)
+    pix_r = np.array([0] * NxNy, dtype=np.int32)
+    pixelsR = np.array([0] * NxNy, dtype=np.float32)
+    maxRad = ct.c_int32()
+    lib = ct.CDLL( '/gpfs/cfel/cxi/scratch/data/2020/EXFEL-2019-Schmidt-Mar-p002450/scratch/galchenm/scripts_for_work/to_change/new/CsPadMaskMaker-alexandra/SubLocalBG.so')
+    pfun = lib.BuildRadialArray
+    pfun.restype = ct.c_bool
+    pfun.argtypes = (ct.c_size_t, ct.c_void_p, ct.c_void_p, ct.c_float, ct.c_void_p, ct.POINTER(ct.c_int), ct.c_void_p)
+    flag_BRA = pfun(NxNy, _np_ptr(det_x), _np_ptr(det_y), istep, _np_ptr(pix_r), ct.byref(maxRad), _np_ptr(pixelsR))
+    #print("pBuildRadiulArray")
+    return flag_BRA, pix_r, maxRad.value, pixelsR
+
+
+def pMakePolarisationArray(pol, numcomp, cox, coy, detdist, poldegree):
+    #bool MakePolarisationArray(float* pol, int numcomp, float* cox, float* coy, float detdist, float poldegree)
+    #print("pMakePolarisationArray")
+    numcomp = int(numcomp)
+    cox = np.array(cox, dtype=np.float32)
+    coy = np.array(coy, dtype=np.float32)
+    poldegree = float(poldegree)
+    detdist = int(detdist)
+    lib = ct.CDLL( '/gpfs/cfel/cxi/scratch/data/2020/EXFEL-2019-Schmidt-Mar-p002450/scratch/galchenm/scripts_for_work/to_change/new/CsPadMaskMaker-alexandra/SubLocalBG.so')
+    pfun = lib.MakePolarisationArray
+    pfun.restype = ct.c_bool
+    pol = np.array(pol, dtype=np.float32)
+    pfun.argtypes = (ct.c_void_p, ct.c_int, ct.c_void_p, ct.c_void_p, ct.c_float, ct.c_float)
+    flag_MakePol = pfun(_np_ptr(pol), numcomp, _np_ptr(cox), _np_ptr(coy), detdist, poldegree)
+    return pol
+
+def pPolarisationFactorDet(detx, dety, detz, degree):
+    #float PolarisationFactorDet(float detx, float dety, float detz, float degree)
+    lib = ct.CDLL( '/gpfs/cfel/cxi/scratch/data/2020/EXFEL-2019-Schmidt-Mar-p002450/scratch/galchenm/scripts_for_work/to_change/new/CsPadMaskMaker-alexandra/SubLocalBG.so')
+    pfun = lib.PolarisationFactorDet
+    pfun.restype = ct.c_float
+    pfun.argtypes = (ct.c_float, ct.c_float, ct.c_float, ct.c_float)
+
+    pol_value = pfun(detx, dety, detz, degree)
+
+    return pol_value
+
+def av_radial_mean_profile(x, y, dist, data, mask_inp=None, pol_bool=False):
+    
+    # x,y,z from geometry file
+    # I from data image
+    len_array = len(x.flatten())
+    Int = np.reshape(data.copy(), len_array)
+    
+    # mask_inp - MASK_GOOD and MASK_BAD
+    # Check with mask => indices where MASK_BAD, I[indices] = bstpReg - 1
+    
+    #print('check')
+    #print(x[0:50])
+    #print(y[0:50])
+    #print(dist)
+    if mask_inp is not None:
+
+        mask = mask_inp.copy()
+        mask = mask.flatten()
+        Int = np.where(mask == False, bstpReg - 1., Int)
+
+    
+    if pol_bool: 
+        # Make correction to polarisation if get distance from .h5 file
+        # calculate polarisation factor
+        pol = np.zeros_like(Int)
+        pol = pMakePolarisationArray(pol, len_array, x.flatten(), y.flatten(), dist, 0.99)
+        #print(pol[0:50])
+        #print(max(pol), min(pol))
+        # Take into account polarisation
+        Int = Int / pol #Int * pol
+        print('Polarisation factor')
+        
+        
+    else:
+        print('No polarisation factor')
+    
+    #pBuildRadiulArray(NxNy, det_x, det_y, istep=1, pix_r, maxRad=0, pixelsR)
+    flag_BRA, pix_r, maxRad, pixelsR = pBuildRadiulArray(len_array, x, y, istep, None, 0, None)
+
+    #pSubtractBgLoop(data, pix_nn, pix_r, hitfinderMinSNR=4.0, ADCthresh=0.0, bstpReg, radialcurve)
+    radialcurve, Int = pSubtractBgLoop(Int, len(Int), pix_r, hitfinderMinSNR, ADCthresh, bstpReg, None)
+
+    return Int.reshape(data.shape)
 
 
 def make_pilatus_edges():
@@ -327,29 +468,52 @@ def dilate(mask):
 class Application:
     def __init__(self, cspad, geom_fnam = None, mask = None):
         # check if the cspad is psana shaped
+        print("SHAPE IS {}\n".format(cspad.shape))
+
         if cspad.shape == (4, 8, 185, 388) :
             self.cspad = gf.ijkl_to_ss_fs(cspad)
             self.cspad_shape_flag = 'psana'
         elif cspad.shape == (4 * 8, 185, 388) :
             self.cspad = gf.ijkl_to_ss_fs(cspad.reshape((4,8,185, 388)))
             self.cspad_shape_flag = 'psana2'
-        elif cspad.shape == (1480, 1552):
+        elif all([i in cspad.shape for i in (1480, 1552)]): #elif cspad.shape == (1480, 1552):
             self.cspad_shape_flag = 'slab'
-            self.cspad = cspad
+            if len(cspad.shape) > 2:
+                self.cspad = cspad[0,]
+                print(cspad[0,].shape)
+            else:
+                self.cspad = cspad
         elif cspad.shape == pilatus_geom_shape :
             self.cspad_shape_flag = 'pilatus'
             self.cspad = cspad
-        else :
+        elif all([i in cspad.shape for i in (16,512,128)]): # (16,512,128) in cspad.shape
+            self.cspad_shape_flag = '(N, 16, 512, 128)'
+            self.cspad = gf.converter_to_slab_format(cspad)
+        elif all([i in cspad.shape for i in (8,512,1024)]): # (8,512,1024) in cspad.shape -JF
+            self.cspad_shape_flag = '(N, 8, 512, 1024)'
+            self.cspad = gf.converter_to_slab_format(cspad)
+        else:
             # this is not in fact a cspad image
             self.cspad_shape_flag = 'other'
-            self.cspad = cspad
+            if len(cspad.shape) > 2:
+                self.cspad = cspad[0,]
+                print(cspad[0,].shape)
+            else:
+                self.cspad = cspad
 
-        print(self.cspad_shape_flag)
+        
+
+        self.levels_range = [np.amin(self.cspad), np.amax(self.cspad)]
+
             
         self.mask  = np.ones_like(self.cspad, dtype=np.bool)
         self.geom_fnam = geom_fnam
 
+
         if self.geom_fnam is not None :
+            if self.cspad_shape_flag == '(N, 16, 512, 128)':
+                self.geom_fnam = gf.geometry_converter(geom_fnam)
+            
             self.pixel_maps, self.cspad_shape = gf.get_ij_slab_shaped(self.geom_fnam)
             i, j = np.meshgrid(range(self.cspad.shape[0]), range(self.cspad.shape[1]), indexing='ij')
             self.ss_geom = gf.apply_geom(self.geom_fnam, i)
@@ -361,7 +525,7 @@ class Application:
             # 
             # get the xy coords as a slab
             # self.y_map, self.x_map = gf.make_yx_from_1480_1552(geom_fnam)
-            self.x_map, self.y_map, self.det_dict = gf.pixel_maps_from_geometry_file(geom_fnam, return_dict = True)
+            self.x_map, self.y_map, self.det_dict = gf.pixel_maps_from_geometry_file(self.geom_fnam, return_dict = True)
         else :
             i, j = np.meshgrid(range(self.cspad.shape[0]), range(self.cspad.shape[1]), indexing='ij')
             self.y_map, self.x_map = (i-self.cspad.shape[0]//2, j-self.cspad.shape[1]//2)
@@ -398,6 +562,7 @@ class Application:
             trans      = np.fliplr(self.cspad.T)
             trans_mask = np.fliplr(self.mask.T)
         self.cspad_max  = self.cspad.max()
+        #print("TRANS", trans.shape)
 
         # convert to RGB
         # Set masked pixels to B
@@ -406,11 +571,15 @@ class Application:
         display_data[:, :, 1] = trans * trans_mask
         display_data[:, :, 2] = trans + (self.cspad_max - trans) * ~trans_mask
         
-        self.display_RGB = display_data
+        self.display_RGB = display_data        
+
         if auto :
-            self.plot.setImage(self.display_RGB)
+            self.plot.setImage(self.display_RGB, levels=self.levels_range)
         else :
-            self.plot.setImage(self.display_RGB, autoRange = False, autoLevels = False, autoHistogramRange = False)
+            self.plot.setImage(self.display_RGB, autoRange = False, autoLevels = False, levels=self.levels_range, autoHistogramRange = False)
+        
+
+
 
     def generate_mask(self):
         self.mask = self.mask_clicked.copy()
@@ -500,11 +669,21 @@ class Application:
             mask = self.mask
         elif self.cspad_shape_flag == 'other' :
             mask = self.mask
+        elif self.cspad_shape_flag == '(N, 16, 512, 128)' or self.cspad_shape_flag == '(N, 8, 512, 1024)':
+            new_shape = (self.cspad.shape[0] // 512, 512, self.cspad.shape[1])
+            #mask = np.array([np.reshape(self.mask.ravel(), new_shape)])
+            mask = np.reshape(self.mask.ravel(), new_shape)
+        #elif self.cspad_shape_flag == '(N, 8, 512, 1024)':
+        #    new_shape = (self.cspad.shape[0] // 512, 512, self.cspad.shape[1])
+        #    #mask = np.array([np.reshape(self.mask.ravel(), new_shape)])
+        #    mask = np.array([np.reshape(self.mask.ravel(), new_shape)])
         else :
             mask = self.mask
         
         print('outputing mask as np.int16 (h5py does not support boolean arrays yet)...')
-        f = h5py.File('mask.h5', 'w')
+        path = os. getcwd() #os.path.dirname(H5_name)
+        print(mask.shape)
+        f = h5py.File(os.path.join(path, 'mask.h5'), 'w')
         f.create_dataset('/data/data', data = mask.astype(np.int16))
         f.close()
         print('Done!')
@@ -549,18 +728,20 @@ class Application:
         self.generate_mask()
         self.updateDisplayRGB()
     
-    def mask_hist(self):
+    def mask_hist(self): #CHECK IT
         min_max = self.plot.getHistogramWidget().item.getLevels()
-        
         if self.toggle_checkbox.isChecked():
             self.mask_clicked[np.where(self.cspad < min_max[0])] = ~self.mask_clicked[np.where(self.cspad < min_max[0])]
             self.mask_clicked[np.where(self.cspad > min_max[1])] = ~self.mask_clicked[np.where(self.cspad > min_max[1])]
         elif self.mask_checkbox.isChecked():
-            self.mask_clicked[np.where(self.cspad < min_max[0])] = False
-            self.mask_clicked[np.where(self.cspad > min_max[1])] = False
+            #self.mask_clicked[np.where(self.cspad < min_max[0])] = False
+            #self.mask_clicked[np.where(self.cspad > min_max[1])] = False
+            self.mask_clicked = np.where(self.cspad < min_max[0], False, np.where(self.cspad > min_max[1], False, self.mask_clicked))
         elif self.unmask_checkbox.isChecked():
-            self.mask_clicked[np.where(self.cspad < min_max[0])] = True
-            self.mask_clicked[np.where(self.cspad > min_max[1])] = True
+            #self.mask_clicked[np.where(self.cspad < min_max[0])] = True
+            #self.mask_clicked[np.where(self.cspad > min_max[1])] = True
+            self.mask_clicked = np.where(self.cspad < min_max[0], True, np.where(self.cspad > min_max[1], True, self.mask_clicked))
+            
         
         self.generate_mask()
         self.updateDisplayRGB()
@@ -594,11 +775,111 @@ class Application:
         self.generate_mask()
         self.updateDisplayRGB()
 
+    def generate_brush_kernel(self):
+        size = self.brush_size.value()
+        r = size/2.
+        cx, cy = (size - 1)/2., (size - 1)/2.
+        x, y = np.ogrid[-cx:size-cx, -cy:size-cy]
+        kernel = np.zeros((size, size, 4))
+        kernel[:,:,0][x*x + y*y < r*r] = 1
+        kernel[:,:,3][x*x + y*y < r*r] = 1
+        return kernel
+
+    def use_brush(self):
+        if self.brush_button.isChecked():
+            self.app.setOverrideCursor(QtCore.Qt.CrossCursor)
+            img = self.plot.getImageItem()
+            self.brush_img = pg.ImageItem(np.zeros((img.image.shape[0], img.image.shape[1], 4)))
+            self.plot.addItem(self.brush_img)
+            kernel = self.generate_brush_kernel()
+            self.brush_img.setLevels([0, 1])
+            self.brush_img.setDrawKernel(kernel, mask=kernel, center=(kernel.shape[0]//2, kernel.shape[1]//2), mode='set')
+        elif self.brush_img:
+            self.discard_brush()
+
+    def change_brush(self):
+        if self.brush_img:
+            kernel = self.generate_brush_kernel()
+            self.brush_img.setLevels([0, 1])
+            self.brush_img.setDrawKernel(kernel, mask=kernel, center=(kernel.shape[0]//2, kernel.shape[1]//2), mode='set')
+        else:
+            pass
+
+    def discard_brush(self):
+        if self.brush_button.isChecked():
+            self.app.restoreOverrideCursor()
+            self.plot.removeItem(self.brush_img)
+            self.brush_img.clear()
+            self.brush_img = None
+            self.brush_button.toggle()
+    
+    def add_brush(self):
+        if not self.brush_button.isChecked():
+            return
+        
+        if self.geom_fnam is not None :
+            for j0, i0 in np.transpose(np.where(self.brush_img.image[:,:,0] > 0)):
+                i1 = self.cspad_shape[0] - 1 - i0 # array ss (with the fliplr and .T)
+                j1 = j0                           # array fs (with the fliplr and .T)
+                if (0 <= i1 < self.cspad_shape[0]) and (0 <= j1 < self.cspad_shape[1]):
+                    i = self.ss_geom[i1, j1]  # un-geometry corrected ss
+                    j = self.fs_geom[i1, j1]  # un-geometry corrected fs
+                    if i == 0 and j == 0 and i1 != 0 and j1 != 0 :
+                        continue 
+                    else :
+                        if self.toggle_checkbox.isChecked():
+                            self.mask_clicked[i, j] = ~self.mask_clicked[i, j]
+                            self.mask[i, j]         = ~self.mask[i, j]
+                        elif self.mask_checkbox.isChecked():
+                            self.mask_clicked[i, j] = False
+                            self.mask[i, j]         = False
+                        elif self.unmask_checkbox.isChecked():
+                            self.mask_clicked[i, j] = True
+                            self.mask[i, j]         = True
+                        
+                        if self.mask[i, j] :
+                            self.display_RGB[j0, i0, :] = np.array([1,1,1]) * self.cspad[i, j]
+                        else :
+                            self.display_RGB[j0, i0, :] = np.array([0,0,1]) * self.cspad_max
+        else :
+            for j0, i0 in np.transpose(np.where(self.brush_img.image[:,:,0] > 0)):
+                i1 = self.cspad.shape[0] - 1 - i0 # array ss (with the fliplr and .T)
+                j1 = j0                           # array fs (with the fliplr and .T)
+                if (0 <= i1 < self.cspad.shape[0]) and (0 <= j1 < self.cspad.shape[1]):
+                    if self.toggle_checkbox.isChecked():
+                        self.mask_clicked[i1, j1] = ~self.mask_clicked[i1, j1]
+                        self.mask[i1, j1]         = ~self.mask[i1, j1]
+                    elif self.mask_checkbox.isChecked():
+                        self.mask_clicked[i1, j1] = False
+                        self.mask[i1, j1]         = False
+                    elif self.unmask_checkbox.isChecked():
+                        self.mask_clicked[i1, j1] = True
+                        self.mask[i1, j1]         = True
+                    if self.mask[i1, j1] :
+                        self.display_RGB[j0, i0, :] = np.array([1,1,1]) * self.cspad[i1, j1]
+                    else :
+                        self.display_RGB[j0, i0, :] = np.array([0,0,1]) * self.cspad_max
+
+        self.discard_brush()
+        self.plot.setImage(self.display_RGB, autoRange = False, autoLevels = False, autoHistogramRange = False)
+    
+    def onChanged(self):
+        '''
+        if np.amin(self.cspad) != float(self.min_box.text()):
+            self.min_box.setText(str(np.amin(self.cspad)))
+        
+        if np.amax(self.cspad) != float(self.max_box.text()):
+            self.max_box.setText(str(np.amax(self.cspad)))
+        '''
+        self.levels_range = [float(self.min_box.text()), float(self.max_box.text())]
+        self.updateDisplayRGB()
+
+
     def initUI(self):
         signal.signal(signal.SIGINT, signal.SIG_DFL) # allow Control-C
         
         # Always start by initializing Qt (only once per application)
-        app = QtGui.QApplication([])
+        self.app = QtGui.QApplication([])
 
         # Define a top-level widget to hold everything
         w = QtGui.QWidget()
@@ -636,6 +917,21 @@ class Application:
         errode_button = QtGui.QPushButton('errode mask')
         errode_button.clicked.connect(self.errode_mask)
         
+        # Brush
+        self.brush_img = None
+        self.brush_button = QtGui.QPushButton('brush')
+        self.brush_button.clicked.connect(self.use_brush)
+        self.brush_button.setCheckable(True)
+
+        self.brush_size = QtGui.QSpinBox(value=10, minimum=1)
+        self.brush_size.valueChanged.connect(self.change_brush)
+
+        add_button = QtGui.QPushButton('add')
+        add_button.clicked.connect(self.add_brush)
+
+        discard_button = QtGui.QPushButton('discard')
+        discard_button.clicked.connect(self.discard_brush)
+
         # toggle / mask / unmask checkboxes
         self.toggle_checkbox   = QtGui.QCheckBox('toggle')
         self.mask_checkbox     = QtGui.QCheckBox('mask')
@@ -651,7 +947,7 @@ class Application:
         # unbonded pixels button
         unbonded_button = QtGui.QPushButton('unbonded pixels')
         unbonded_button.clicked.connect( self.mask_unbonded_pixels )
-        if self.cspad_shape_flag in ['psana', 'psana2', 'slab']:
+        if self.cspad_shape_flag in ['psana', 'psana2', 'slab', '(N, 16, 512, 128)']:
             unbonded_button.setEnabled(False)
         
         # asic edges button
@@ -697,16 +993,50 @@ class Application:
             olek_edges_button.clicked.connect( self.mask_olek_edge_pixels )
             vbox.addWidget(olek_edges_button)
         
+        # radial mean button Marina Galchenkova
+        self.radial_mean_button = QtGui.QPushButton('subtract radial')
+        self.radial_mean_button.clicked.connect(self.radial_mean_substraction)
+        self.add_load_button = QtGui.QPushButton('load geom')
+        self.add_load_button.clicked.connect(self.load_data)
+        
+        if self.geom_fnam is None: # Marina Galchenkova
+            #if you don't put a geometry file in cmd as a paramater
+            #you can load it by pushing "load geom" button
+            self.radial_mean_button.setEnabled(False)
+            self.add_load_button.setEnabled(True)
+        else:
+            self.radial_mean_button.setEnabled(True)
+            self.add_load_button.setEnabled(False)
+
+        
+        vbox.addWidget(self.radial_mean_button)
+        vbox.addWidget(self.add_load_button)
+
+        self.cheetah_mask_button = QtGui.QPushButton('cheetah threshold')
+        self.cheetah_mask_button.clicked.connect(self.make_cheetah_mask)
+
         # cheetah mask button
         if self.geom_fnam is not None :
-            cheetah_mask_button = QtGui.QPushButton('cheetah threshold')
-            cheetah_mask_button.clicked.connect(self.make_cheetah_mask)
-            vbox.addWidget(cheetah_mask_button)
+            self.cheetah_mask_button.setEnabled(True)
+        else:
+            self.cheetah_mask_button.setEnabled(False)
+
+        vbox.addWidget(self.cheetah_mask_button)
         
         vbox.addWidget(self.toggle_checkbox)
         vbox.addWidget(self.mask_checkbox)
         vbox.addWidget(self.unmask_checkbox)
         
+
+
+        brush_layout = QtGui.QGridLayout()
+        brush_layout.addWidget(self.brush_button, 0, 0)
+        brush_layout.addWidget(self.brush_size, 0, 1)
+        brush_layout.addWidget(add_button, 1, 0)
+        brush_layout.addWidget(discard_button, 1, 1)
+
+        vbox.addLayout(brush_layout)
+
         vbox.addStretch(1)
         #vbox.addWidget(unbonded_checkbox)
         #vbox.addWidget(edges_checkbox)
@@ -721,6 +1051,23 @@ class Application:
         layout.setColumnStretch(1, 1)
         #layout.setColumnMinimumWidth(0, 250)
 
+        self.max_box = QtGui.QLineEdit()
+        self.min_box = QtGui.QLineEdit()
+        self.min_box.setText(str(np.amin(self.cspad)))
+        self.max_box.setText(str(np.amax(self.cspad)))
+        self.max_box.textChanged.connect(self.onChanged)
+        self.min_box.textChanged.connect(self.onChanged)
+
+        hbox = QtGui.QHBoxLayout()
+        hbox.addStretch(1)
+        hbox.addWidget(QtGui.QLabel('Min Int'))
+        hbox.addWidget(self.min_box)
+        hbox.addWidget(QtGui.QLabel('Max Int'))
+        hbox.addWidget(self.max_box)
+
+        vbox.addLayout(hbox)
+
+
         # display the image
         self.generate_mask()
         self.updateDisplayRGB(auto = True)
@@ -734,8 +1081,102 @@ class Application:
         w.show()
         
         ## Start the Qt event loop
-        app.exec_()
+        self.app.exec_()
     
+
+    def radial_mean_substraction(self):
+        pol_bool = False
+        
+        preamb = gf.read_geometry_file_preamble(self.geom_fnam)
+        dist_m = preamb['coffset']
+        res = preamb['res']
+        clen = preamb['clen']
+        dist = 0.
+
+        if clen is not None:
+
+            if not gf.is_float_try(clen):
+                check = H5_name + clen
+                myCmd = os.popen('h5ls ' + check).read()
+
+                if "NOT" in myCmd:
+                    print('Error: no clen from .h5 file')
+                    clen_v = 0.
+                else:
+                    f = h5py.File(H5_name, 'r')
+                    clen_v = f[clen][()] * (1e-3) # f[clen].value * (1e-3)
+                    f.close()
+                    pol_bool = True
+                    print('Take into account polarisation')
+            else:
+                clen_v = float(clen)
+                pol_bool = True
+                print('Take into account polarisation')
+            
+            if dist_m is not None:
+                dist_m += clen_v
+
+            else:
+                print('Error: no coffset in geometry file. It is considered as 0.')
+                dist_m = 0.
+            print('CLEN, COFSET', clen, dist_m)
+            dist = dist_m * res
+        else:
+            print('Error: no clen in geometry file')
+        
+        #m_background = av_radial_mean_profile(self.x_map, self.y_map, dist, self.cspad.copy(), self.mask.copy(), pol_bool)
+        m_background = av_radial_mean_profile(self.x_map, self.y_map, dist, self.cspad.copy(), self.mask_clicked.copy(), pol_bool)
+        self.cspad = m_background.astype(np.int)
+        
+        self.levels_range = [np.amin(self.cspad), np.amax(self.cspad)]
+        self.min_box.setText(str(np.amin(self.cspad)))
+        self.max_box.setText(str(np.amax(self.cspad)))
+
+        self.updateDisplayRGB()
+
+    def load_data(self):
+        path = os.path.dirname(H5_name)
+        geom_fnam = QtGui.QFileDialog.getOpenFileName(self.add_load_button, "Choose geometry file", path)[0]
+        if self.cspad_shape_flag == '(N, 16, 512, 128)':
+            self.geom_fnam = gf.geometry_converter(geom_fnam)
+        else:
+            self.geom_fnam = geom_fnam
+
+        if self.geom_fnam is not None:
+            preamb = gf.read_geometry_file_preamble(self.geom_fnam)
+
+            self.pixel_maps, self.cspad_shape = gf.get_ij_slab_shaped(self.geom_fnam)
+            i, j = np.meshgrid(range(self.cspad.shape[0]), range(self.cspad.shape[1]), indexing='ij')
+            self.ss_geom = gf.apply_geom(self.geom_fnam, i)
+            self.fs_geom = gf.apply_geom(self.geom_fnam, j)
+            self.cspad_geom = np.zeros(self.cspad_shape, dtype=self.cspad.dtype)
+            self.mask_geom  = np.zeros(self.cspad_shape, dtype=np.bool)
+            #
+            self.background = np.where(np.fliplr(gf.apply_geom(self.geom_fnam, np.ones_like(self.mask)).astype(np.bool).T) == False)
+            # 
+            # get the xy coords as a slab
+            # self.y_map, self.x_map = gf.make_yx_from_1480_1552(geom_fnam)
+            self.x_map, self.y_map, self.det_dict = gf.pixel_maps_from_geometry_file(self.geom_fnam, return_dict = True)
+
+
+            self.mask_edges    = False
+            self.mask_unbonded = False
+
+            self.unbonded_pixels = unbonded_pixels()
+            self.asic_edges      = edges(self.mask.shape, 0, self.det_dict)
+
+
+            if mask is not None:
+                self.mask_clicked  = mask.copy()
+            else :
+                self.mask_clicked  = np.ones_like(self.mask)
+
+
+            self.radial_mean_button.setEnabled(True)
+            self.add_load_button.setEnabled(False)
+            self.cheetah_mask_button.setEnabled(True)
+            self.updateDisplayRGB(auto = True)
+
     def make_cheetah_mask(self):
         mask = cheetah_mask(self.cspad.astype(np.float), self.mask_clicked.copy(), self.x_map, self.y_map, adc_thresh=20, min_snr=6, counter = 5)
         
@@ -765,6 +1206,8 @@ class Application:
 #                ij_label.setText('ss fs value: ' + str(ij[0]).rjust(5) + str(ij[1]).rjust(5) + str(self.cspad[ij[0], ij[1]]).rjust(8) )
 
     def mouseClicked(self, plot, click):
+        if self.brush_button.isChecked():
+            return
         if click.button() == 1:
             img = plot.getImageItem()
             if self.geom_fnam is not None :
@@ -814,6 +1257,7 @@ class Application:
             
             self.plot.setImage(self.display_RGB, autoRange = False, autoLevels = False, autoHistogramRange = False)
 
+
 def parse_cmdline_args():
     parser = argparse.ArgumentParser(description='CsPadMaskMaker - mask making, but with a mouse!')
     parser.add_argument('cspad_fnam', type=str, help="filename for the hdf5 cspad image file")
@@ -824,11 +1268,12 @@ def parse_cmdline_args():
     return parser.parse_args()
     
 if __name__ == '__main__':
+    global H5_name
     args = parse_cmdline_args()
-
+    H5_name = args.cspad_fnam
     # load the image
     f = h5py.File(args.cspad_fnam, 'r')
-    cspad = f[args.h5path].value
+    cspad = f[args.h5path][()]
     # remove single dimensional entries
     cspad = np.squeeze(cspad)
     f.close()
@@ -840,9 +1285,15 @@ if __name__ == '__main__':
         else :
             path = '/data/data'
         f = h5py.File(args.mask, 'r')
-        mask = f[path].value.astype(np.bool)
+        mask = f[path][()].astype(np.bool)
         f.close()
-    else :
+        
+        if len(mask.shape) > 3:
+            data_shape = mask.shape
+            new_shape = (data_shape[1] * data_shape[2], data_shape[3])
+            mask = np.reshape(mask[0,].ravel(), new_shape)
+        
+    else:
         mask = None
 
     # start the gui
@@ -850,6 +1301,9 @@ if __name__ == '__main__':
     """
     ap = Application(cspad, geom_fnam = args.geometry, mask = mask)
     """
-    
+    """
+    if self.cspad_shape_flag == '(N, 16, 512, 128)':
+        os.remove(geom_fnam)
+    """
 
 
